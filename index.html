@@ -192,11 +192,11 @@ function loop(){
   if(vid.videoWidth&&!ed){
     const vw=vid.videoWidth,vh=vid.videoHeight,q=detect(vid,vw,vh);
     if(q){miss=0;
-      if(quad&&q.every((p,i)=>dist(p,quad[i])<vw*.08))quad=quad.map((p,i)=>[p[0]+(q[i][0]-p[0])*.5,p[1]+(q[i][1]-p[1])*.5]);else quad=q;
-    }else if(++miss>3)quad=null;
+      if(quad)quad=quad.map((p,i)=>[p[0]+(q[i][0]-p[0])*.2,p[1]+(q[i][1]-p[1])*.2]);else quad=q;
+    }else if(++miss>10)quad=null;
     drawOv(vw,vh);
   }
-  timer=setTimeout(loop,200);
+  timer=setTimeout(loop,60);
 }
 function drawOv(vw,vh){
   const dpr=devicePixelRatio||1,cw=ov.clientWidth,ch=ov.clientHeight;
@@ -324,6 +324,13 @@ $('#edOk').onclick=async()=>{
 };
 
 /* ---------- daftar halaman ---------- */
+function showPreview(p){
+  const v=document.createElement('div');
+  v.style='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;display:grid;place-items:center;padding:20px;cursor:zoom-out';
+  const img=new Image();img.src=final(p).toDataURL('image/jpeg',.9);
+  img.style='max-width:100%;max-height:100%;box-shadow:0 0 30px rgba(0,0,0,.5)';
+  v.appendChild(img);v.onclick=()=>v.remove();document.body.appendChild(v);
+}
 function thumb(p){
   const f=final(p),c=document.createElement('canvas'),k=Math.min(1,320/Math.max(f.width,f.height));
   c.width=Math.round(f.width*k);c.height=Math.round(f.height*k);c.getContext('2d').drawImage(f,0,0,c.width,c.height);return c;
@@ -336,8 +343,9 @@ function refresh(){
   if(!pages.length){g.innerHTML='<div class="empty"><b>Belum ada halaman</b><br>Ambil foto dokumen di tab Kamera<br>atau pilih foto dari galeri.</div>';return}
   pages.forEach((p,i)=>{
     const el=document.createElement('div');el.className='pg';el.dataset.i=i;
-    el.innerHTML='<div class="th"><span class="n">'+(i+1)+'</span></div><div class="acts"><button data-a="l" aria-label="Putar kiri">⟲</button><button data-a="r" aria-label="Putar kanan">⟳</button><button data-a="e" aria-label="Atur kotak" style="font-size:14px;font-weight:700">Potong</button><button class="del" data-a="d" aria-label="Hapus">✕</button></div>';
-    el.querySelector('.th').appendChild(thumb(p));g.appendChild(el);
+    el.innerHTML='<div class="th" title="Klik untuk preview"><span class="n">'+(i+1)+'</span></div><div class="acts"><button data-a="l" aria-label="Putar kiri">⟲</button><button data-a="r" aria-label="Putar kanan">⟳</button><button data-a="e" aria-label="Atur kotak" style="font-size:14px;font-weight:700">Potong</button><button class="del" data-a="d" aria-label="Hapus">✕</button></div>';
+    const t=thumb(p);t.onclick=()=>showPreview(p);
+    el.querySelector('.th').appendChild(t);g.appendChild(el);
   });
 }
 $('#grid').onclick=e=>{
