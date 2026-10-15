@@ -144,34 +144,77 @@ $('#name').value=stamp();
 
 /* ---------- deteksi tepi kertas (ringan: Otsu + komponen terbesar) ---------- */
 function detect(src,sw,sh){
-  const W=128,H=Math.max(8,Math.round(W*sh/sw)),N=W*H;
+  const W=160,H=Math.max(12,Math.round(W*sh/sw)),N=W*H;
   detect.c=detect.c||document.createElement('canvas');
   const c=detect.c;c.width=W;c.height=H;
-  const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(src,0,0,W,H);
-  const d=x.getImageData(0,0,W,H).data,g=new Uint8Array(N),hist=new Array(256).fill(0);
-  for(let i=0;i<N;i++){const v=(d[i*4]*77+d[i*4+1]*150+d[i*4+2]*29)>>8;g[i]=v;hist[v]++}
-  let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
-  let wB=0,sB=0,best=0,t=128;
-  for(let i=0;i<256;i++){wB+=hist[i];if(!wB)continue;const wF=N-wB;if(!wF)break;sB+=i*hist[i];const mB=sB/wB,mF=(sum-sB)/wF,b=wB*wF*(mB-mF)**2;if(b>best){best=b;t=i}}
-  const lab=new Uint8Array(N),stk=new Int32Array(N);let res=null,ba=0;
-  for(let s=0;s<N;s++){
-    if(lab[s]||g[s]<=t)continue;
-    let sp=0,a=0;stk[sp++]=s;lab[s]=1;
-    const K=[-1e9,-1e9,-1e9,-1e9],P=[[0,0],[0,0],[0,0],[0,0]];
-    while(sp){
-      const i=stk[--sp],px=i%W,py=(i/W)|0;a++;
-      const k=[-(px+py),px-py,px+py,py-px];
-      for(let j=0;j<4;j++)if(k[j]>K[j]){K[j]=k[j];P[j]=[px,py]}
-      if(px>0&&!lab[i-1]&&g[i-1]>t){lab[i-1]=1;stk[sp++]=i-1}
-      if(px<W-1&&!lab[i+1]&&g[i+1]>t){lab[i+1]=1;stk[sp++]=i+1}
-      if(py>0&&!lab[i-W]&&g[i-W]>t){lab[i-W]=1;stk[sp++]=i-W}
-      if(py<H-1&&!lab[i+W]&&g[i+W]>t){lab[i+W]=1;stk[sp++]=i+W}
-    }
-    if(a>ba){ba=a;res=P}
+  const cx=c.getContext('2d',{willReadFrequently:true});cx.drawImage(src,0,0,W,H);
+  const d=cx.getImageData(0,0,W,H).data,g=new Float32Array(N);
+  for(let i=0;i<N;i++)g[i]=(d[i*4]*77+d[i*4+1]*150+d[i*4+2]*29)>>8;
+  // blur 3x3
+  const b=new Float32Array(g);
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;b[i]=(g[i-W-1]+g[i-W]+g[i-W+1]+g[i-1]+g[i]+g[i+1]+g[i+W-1]+g[i+W]+g[i+W+1])/9}
+  // sobel -> peta tepi
+  const m=new Float32Array(N);let s1=0,s2=0;
+  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+    const i=y*W+x;
+    const gx=(b[i-W+1]+2*b[i+1]+b[i+W+1])-(b[i-W-1]+2*b[i-1]+b[i+W-1]);
+    const gy=(b[i+W-1]+2*b[i+W]+b[i+W+1])-(b[i-W-1]+2*b[i-W]+b[i-W+1]);
+    const v=Math.abs(gx)+Math.abs(gy);m[i]=v;s1+=v;s2+=v*v;
   }
-  const r=ba/N;if(!res||r<.12||r>.93)return null;
-  const q=res.map(p=>[(p[0]+.5)*sw/W,(p[1]+.5)*sh/H]);
-  // pastikan bentuk masuk akal
+  const mean=s1/N,sd=Math.sqrt(Math.max(0,s2/N-mean*mean)),th=Math.max(mean+sd*.9,40);
+  let e=new Uint8Array(N);for(let i=0;i<N;i++)e[i]=m[i]>th?1:0;
+  const dil=a=>{const o=new Uint8Array(N);for(let y=0;y<H;y++)for(let x=0;x<W;x++){if(!a[y*W+x])continue;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const X=x+dx,Y=y+dy;if(X>=0&&X<W&&Y>=0&&Y<H)o[Y*W+X]=1}}return o};
+  e=dil(dil(e));
+  // area "luar": banjir dari pinggir frame lewat piksel non-tepi
+  const out=new Uint8Array(N),stk=new Int32Array(N);let sp=0;
+  const seed=i=>{if(!e[i]&&!out[i]){out[i]=1;stk[sp++]=i}};
+  for(let x=0;x<W;x++){seed(x);seed((H-1)*W+x)}
+  for(let y=0;y<H;y++){seed(y*W);seed(y*W+W-1)}
+  while(sp){const i=stk[--sp],x=i%W,y=(i/W)|0;
+    if(x>0)seed(i-1);if(x<W-1)seed(i+1);if(y>0)seed(i-W);if(y<H-1)seed(i+W)}
+  // wilayah tertutup terbesar = kertas (dikelilingi tepi)
+  const lab=new Uint8Array(N);let best=null,ba=0;
+  for(let s=0;s<N;s++){
+    if(lab[s]||out[s]||e[s])continue;
+    const pts=[];sp=0;stk[sp++]=s;lab[s]=1;
+    const go=j=>{if(!lab[j]&&!out[j]&&!e[j]){lab[j]=1;stk[sp++]=j}};
+    while(sp){const i=stk[--sp],x=i%W,y=(i/W)|0;pts.push(i);
+      if(x>0)go(i-1);if(x<W-1)go(i+1);if(y>0)go(i-W);if(y<H-1)go(i+W)}
+    if(pts.length>ba){ba=pts.length;best=pts}
+  }
+  const r=ba/N;if(!best||r<.1||r>.9)return null;
+  // titik batas wilayah
+  const inR=new Uint8Array(N);best.forEach(i=>inR[i]=1);
+  const bp=[];
+  for(const i of best){const x=i%W,y=(i/W)|0;
+    if(x===0||y===0||x===W-1||y===H-1||!inR[i-1]||!inR[i+1]||!inR[i-W]||!inR[i+W])bp.push([x,y])}
+  // convex hull (monotone chain)
+  bp.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+  const lo=[],up=[];
+  for(const p of bp){while(lo.length>1&&cr(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p)}
+  for(let i=bp.length-1;i>=0;i--){const p=bp[i];while(up.length>1&&cr(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p)}
+  lo.pop();up.pop();let hull=lo.concat(up);
+  if(hull.length<4)return null;
+  if(hull.length>48){const st=hull.length/48;hull=Array.from({length:48},(_,i)=>hull[Math.floor(i*st)])}
+  // pilih 4 titik hull dengan luas segiempat terbesar
+  const n=hull.length;let bq=null,bA=0;
+  for(let i=0;i<n;i++)for(let j=i+2;j<n;j++){
+    let kp=-1,kn=-1,ap=0,an=0;
+    for(let k=0;k<n;k++){if(k===i||k===j)continue;const a=cr(hull[i],hull[j],hull[k]);
+      if(a>ap){ap=a;kp=k}else if(-a>an){an=-a;kn=k}}
+    if(kp>=0&&kn>=0&&ap+an>bA){bA=ap+an;bq=[i,kp,j,kn]}
+  }
+  if(!bq)return null;
+  let q=bq.map(i=>hull[i]);
+  // urutkan: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah
+  const mx=q.reduce((s,p)=>s+p[0],0)/4,my=q.reduce((s,p)=>s+p[1],0)/4;
+  q.sort((a,b)=>Math.atan2(a[1]-my,a[0]-mx)-Math.atan2(b[1]-my,b[0]-mx));
+  let s0=0;q.forEach((p,i)=>{if(p[0]+p[1]<q[s0][0]+q[s0][1])s0=i});
+  q=q.slice(s0).concat(q.slice(0,s0));
+  // kompensasi tebal garis tepi yang tadi dibuang (±4px)
+  q=q.map(p=>{const dx=p[0]-mx,dy=p[1]-my,l=Math.hypot(dx,dy)||1,k=(l+4)/l;return [mx+dx*k,my+dy*k]});
+  q=q.map(p=>[Math.max(0,Math.min(W-1,p[0]))*sw/W,Math.max(0,Math.min(H-1,p[1]))*sh/H]);
   if(dist(q[0],q[1])<sw*.1||dist(q[0],q[3])<sh*.1)return null;
   return q;
 }
@@ -192,11 +235,11 @@ function loop(){
   if(vid.videoWidth&&!ed){
     const vw=vid.videoWidth,vh=vid.videoHeight,q=detect(vid,vw,vh);
     if(q){miss=0;
-      if(quad)quad=quad.map((p,i)=>[p[0]+(q[i][0]-p[0])*.2,p[1]+(q[i][1]-p[1])*.2]);else quad=q;
-    }else if(++miss>10)quad=null;
+      if(quad&&q.every((p,i)=>dist(p,quad[i])<vw*.08))quad=quad.map((p,i)=>[p[0]+(q[i][0]-p[0])*.5,p[1]+(q[i][1]-p[1])*.5]);else quad=q;
+    }else if(++miss>3)quad=null;
     drawOv(vw,vh);
   }
-  timer=setTimeout(loop,60);
+  timer=setTimeout(loop,200);
 }
 function drawOv(vw,vh){
   const dpr=devicePixelRatio||1,cw=ov.clientWidth,ch=ov.clientHeight;
@@ -324,13 +367,6 @@ $('#edOk').onclick=async()=>{
 };
 
 /* ---------- daftar halaman ---------- */
-function showPreview(p){
-  const v=document.createElement('div');
-  v.style='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;display:grid;place-items:center;padding:20px;cursor:zoom-out';
-  const img=new Image();img.src=final(p).toDataURL('image/jpeg',.9);
-  img.style='max-width:100%;max-height:100%;box-shadow:0 0 30px rgba(0,0,0,.5)';
-  v.appendChild(img);v.onclick=()=>v.remove();document.body.appendChild(v);
-}
 function thumb(p){
   const f=final(p),c=document.createElement('canvas'),k=Math.min(1,320/Math.max(f.width,f.height));
   c.width=Math.round(f.width*k);c.height=Math.round(f.height*k);c.getContext('2d').drawImage(f,0,0,c.width,c.height);return c;
@@ -343,9 +379,8 @@ function refresh(){
   if(!pages.length){g.innerHTML='<div class="empty"><b>Belum ada halaman</b><br>Ambil foto dokumen di tab Kamera<br>atau pilih foto dari galeri.</div>';return}
   pages.forEach((p,i)=>{
     const el=document.createElement('div');el.className='pg';el.dataset.i=i;
-    el.innerHTML='<div class="th" title="Klik untuk preview"><span class="n">'+(i+1)+'</span></div><div class="acts"><button data-a="l" aria-label="Putar kiri">⟲</button><button data-a="r" aria-label="Putar kanan">⟳</button><button data-a="e" aria-label="Atur kotak" style="font-size:14px;font-weight:700">Potong</button><button class="del" data-a="d" aria-label="Hapus">✕</button></div>';
-    const t=thumb(p);t.onclick=()=>showPreview(p);
-    el.querySelector('.th').appendChild(t);g.appendChild(el);
+    el.innerHTML='<div class="th"><span class="n">'+(i+1)+'</span></div><div class="acts"><button data-a="l" aria-label="Putar kiri">⟲</button><button data-a="r" aria-label="Putar kanan">⟳</button><button data-a="e" aria-label="Atur kotak" style="font-size:14px;font-weight:700">Potong</button><button class="del" data-a="d" aria-label="Hapus">✕</button></div>';
+    el.querySelector('.th').appendChild(thumb(p));g.appendChild(el);
   });
 }
 $('#grid').onclick=e=>{
